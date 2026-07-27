@@ -1,6 +1,6 @@
 # baba-pi
 
-pi extension for [baba](https://github.com/nichochar/baba) — semantic code search over your docs and code.
+pi extension for [baba](https://github.com/pcone/baba) — semantic code search over your docs and code.
 
 Exposes a `semantic_search` tool to the LLM that queries a baba daemon over a Unix socket. All pi sessions (orchestrator + subagents) share one daemon per main repository.
 
@@ -8,10 +8,10 @@ Exposes a `semantic_search` tool to the LLM that queries a baba daemon over a Un
 
 ### 1. Install the baba engine
 
-Clone and build the [baba engine repo](https://github.com/nichochar/baba):
+Clone and build the [baba engine repo](https://github.com/pcone/baba):
 
 ```bash
-git clone https://github.com/nichochar/baba ~/Developer/baba
+git clone https://github.com/pcone/baba ~/Developer/baba
 cd ~/Developer/baba
 cargo build --manifest-path core/Cargo.toml
 ```

@@ -413,13 +413,18 @@ async function daemonRequestOnce(
   const doSend = (): Promise<ServeResponse> => {
     return new Promise<ServeResponse>((res, rej) => {
       let rl: ReturnType<typeof createInterface> | null = null;
+      let settled = false;
 
       const onError = (err: Error) => {
+        if (settled) return;
+        settled = true;
         cleanup();
         rej(err);
       };
 
       const onEnd = () => {
+        if (settled) return;
+        settled = true;
         cleanup();
         rej(new Error("baba daemon closed the connection"));
       };
@@ -438,6 +443,8 @@ async function daemonRequestOnce(
         const line = JSON.stringify(req) + "\n";
         sock.write(line, (writeErr) => {
           if (writeErr) {
+            if (settled) return;
+            settled = true;
             cleanup();
             rej(
               writeErr instanceof Error
@@ -456,6 +463,8 @@ async function daemonRequestOnce(
             try {
               parsed = JSON.parse(raw) as ServeResponse;
             } catch {
+              if (settled) return;
+              settled = true;
               cleanup();
               rej(
                 new Error(
@@ -471,6 +480,8 @@ async function daemonRequestOnce(
                 break; // keep reading
               case "results":
               case "error":
+                if (settled) return;
+                settled = true;
                 cleanup();
                 // Attach any preceding status messages.
                 if (statusMessages.length > 0) {
@@ -486,11 +497,15 @@ async function daemonRequestOnce(
           });
 
           rl.on("error", (err: Error) => {
+            if (settled) return;
+            settled = true;
             cleanup();
             rej(err);
           });
 
           rl.on("close", () => {
+            if (settled) return;
+            settled = true;
             cleanup();
             rej(new Error("baba daemon closed the connection"));
           });

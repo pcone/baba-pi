@@ -168,7 +168,8 @@ function resolveMainRoot(cwd: string): string {
 
 // ── Daemon lifecycle ─────────────────────────────────────────────────
 
-const DAEMON_START_TIMEOUT_MS = 30_000;
+// 120s — cold-start indexing (embedder model load + first index) can take 45-60s.
+const DAEMON_START_TIMEOUT_MS = 120_000;
 const DAEMON_POLL_INTERVAL_MS = 500;
 const SOCKET_CONNECT_TIMEOUT_MS = 2_000;
 

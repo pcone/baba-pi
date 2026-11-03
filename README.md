@@ -94,7 +94,8 @@ claude mcp add --scope user baba -- /Users/scott/Developer/baba-pi/bin/baba-mcp.
 The server searches the repo named by `CLAUDE_PROJECT_DIR`, the project root Claude Code sets
 for the server. Unset or empty, it uses the server's cwd. A worktree resolves to its main
 checkout. The daemon starts on the first call, not at server start. While a cold daemon starts,
-its log lines arrive as progress notifications.
+its log lines arrive as progress notifications: a status line as its `msg`, any other line as
+written.
 
 - `query` (string, required): a natural-language question.
 - `k` (integer, optional, default 10): number of results.
@@ -102,8 +103,8 @@ its log lines arrive as progress notifications.
 The result text is the CLI's stdout for the same query. Failures are `isError` results; the
 server stays up.
 
-Cost, measured on a ~700-file index: a warm query takes 0.53–0.66 s. The first query after the
-tree changes re-indexes for 77–95 s.
+Cost: a warm query takes about 0.2–0.7 s. The first query after the tree changes re-embeds
+what changed: seconds, up to about 95 s for a large change.
 
 The index and `daemon.log` live in `.baba/` at the repo root. Add `.baba/` to that repo's
 `.gitignore`; baba does not write it.

@@ -20,15 +20,18 @@ import {
 import { DEFAULT_TOP_K, search, validTopK } from "../src/client.ts";
 import pkg from "../package.json" with { type: "json" };
 
+// The low-level Server takes the SDK's request schemas and plain JSON Schema.
+// The high-level McpServer would need zod, a peer dependency this repo does not carry.
+
 const TOOL = {
   name: "search",
   description:
     "Semantic search over this repository's docs and code, for questions that " +
     "span files (\"how does the daemon decide liveness\"). Not for exact strings, " +
     "a file you already know, or anything outside the repo. Returns ranked chunks " +
-    "with path, heading, score and excerpt. Cost: a warm query takes 0.53–0.66 s " +
-    "on a ~700-file index; the first query after the tree changes re-indexes for " +
-    "77–95 s.",
+    "with path, heading, score and excerpt. Cost: a warm query takes about " +
+    "0.2–0.7 s; the first query after the tree changes re-embeds what changed, " +
+    "from seconds up to about 95 s for a large change.",
   inputSchema: {
     type: "object" as const,
     properties: {

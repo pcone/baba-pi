@@ -112,11 +112,17 @@ function fakeBin(dir: string): string {
 
 type Run = { code: number | null; stdout: string; stderr: string };
 
+/**
+ * Run `command` to exit. `boundMs` kills it and rejects, so a row that wrongly
+ * reaches a spawn reds on this message. Rows that spawn a daemon pass a larger
+ * bound and a matching bun per-test timeout.
+ */
 function collect(
 	command: string,
 	args: string[],
 	cwd: string,
 	env: Record<string, string>,
+	boundMs = 4000,
 ): Promise<Run> {
 	return new Promise((res, rej) => {
 		const child = spawn(command, args, {
@@ -132,12 +138,10 @@ function collect(
 		child.stderr.setEncoding("utf8").on("data", (c: string) => {
 			stderr += c;
 		});
-		// Under bun's 5s per-test timeout, so a row that wrongly reaches a
-		// spawn reds on this message rather than as an opaque test timeout.
 		const timer = setTimeout(() => {
 			child.kill("SIGKILL");
 			rej(new Error(`baba-search did not exit; stdout=${stdout} stderr=${stderr}`));
-		}, 4000);
+		}, boundMs);
 		child.on("error", (err) => {
 			clearTimeout(timer);
 			rej(err);
@@ -154,8 +158,9 @@ function runCli(
 	cwd: string,
 	args: string[],
 	env: Record<string, string> = {},
+	boundMs = 4000,
 ): Promise<Run> {
-	return collect(process.execPath, [CLI, ...args], cwd, env);
+	return collect(process.execPath, [CLI, ...args], cwd, env, boundMs);
 }
 
 /** Execute the CLI file itself, the way the skill documents it. */
@@ -393,27 +398,37 @@ describe("baba-search", () => {
 		}
 	});
 
-	it("prints the daemon log's startup lines on stderr while it waits", async () => {
-		// The daemon is spawned by the CLI itself: its stderr is the log, and the
-		// lines reach the CLI's stderr before the result on stdout.
-		const repo = tempRepo("baba-cli-log-");
-		try {
-			const run = await runCli(repo, ["hello world"], {
-				BABA_BIN: fakeServeBin(),
-				...fakeEnv({
-					lines: [[0, "baba: startup 1/2"]],
-					bindMs: 600,
-					reply: [ONE_RESULT_LINE],
-				}),
-			});
-			expect(run.code).toBe(0);
-			expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
-			expect(run.stderr).toBe("[baba] baba: startup 1/2\n");
-		} finally {
-			killSpawnedDaemon(repo);
-			rmSync(repo, { recursive: true, force: true });
-		}
-	});
+	it(
+		"prints the daemon log's startup lines on stderr while it waits",
+		async () => {
+			// The daemon is spawned by the CLI itself: its stderr is the log, and the
+			// lines reach the CLI's stderr before the result on stdout.
+			const repo = tempRepo("baba-cli-log-");
+			try {
+				// Spawns a daemon, so it takes the larger bound (see collect).
+				const run = await runCli(
+					repo,
+					["hello world"],
+					{
+						BABA_BIN: fakeServeBin(),
+						...fakeEnv({
+							lines: [[0, "baba: startup 1/2"]],
+							bindMs: 600,
+							reply: [ONE_RESULT_LINE],
+						}),
+					},
+					20_000,
+				);
+				expect(run.code).toBe(0);
+				expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
+				expect(run.stderr).toBe("[baba] baba: startup 1/2\n");
+			} finally {
+				killSpawnedDaemon(repo);
+				rmSync(repo, { recursive: true, force: true });
+			}
+		},
+		25_000,
+	);
 
 	it("exits 1 with the daemon's message on an error response", async () => {
 		const h = await fakeRepo("baba-cli-error-", () => [

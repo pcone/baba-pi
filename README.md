@@ -82,15 +82,37 @@ ranked results to stdout. Diagnostics go to stderr.
 Exit status is 0 for results, 1 when there is no repo, no daemon, or the daemon answered with an error, and 2 for a usage error.
 The embedder stays in the daemon, so a query costs one socket round trip.
 
-Claude Code reaches it through the `baba-search` skill in
-[pi-config](https://github.com/pcone/pi-config) (`skills/baba-search/`), which tells Claude
-when a semantic query beats a grep.
+## MCP server
+
+`bin/baba-mcp.ts` is the same daemon client as a stdio MCP server, with one tool, `search`.
+Claude Code registers it once per user:
+
+```bash
+claude mcp add --scope user baba -- /Users/scott/Developer/baba-pi/bin/baba-mcp.ts
+```
+
+The server searches the repo named by `CLAUDE_PROJECT_DIR`, the project root Claude Code sets
+for the server. Unset or empty, it uses the server's cwd. A worktree resolves to its main
+checkout. The daemon starts on the first call, not at server start. While a cold daemon starts,
+its log lines arrive as progress notifications.
+
+- `query` (string, required): a natural-language question.
+- `k` (integer, optional, default 10): number of results.
+
+The result text is the CLI's stdout for the same query. Failures are `isError` results; the
+server stays up.
+
+Cost, measured on a ~700-file index: a warm query takes 0.53–0.66 s. The first query after the
+tree changes re-indexes for 77–95 s.
+
+The index and `daemon.log` live in `.baba/` at the repo root. Add `.baba/` to that repo's
+`.gitignore`; baba does not write it.
 
 ## Architecture
 
 - **Engine** (`baba` repo): Rust binary + Python CoreML embedder. Indexes docs and code, serves queries over Unix socket.
-- **Extension** (`baba-pi` repo): Thin TypeScript client. `src/client.ts` resolves the main repo from any CWD (worktree-aware), spawns/connects to the daemon and formats results; `src/index.ts` is the pi surface, `bin/baba-search.ts` the CLI.
-- **Daemon lifecycle**: One detached `baba serve --socket` per repo clone. Self-exits after 10 minutes of inactivity. Spawned on demand by the extension.
+- **Extension** (`baba-pi` repo): Thin TypeScript client. `src/client.ts` resolves the main repo from any CWD (worktree-aware), spawns/connects to the daemon and formats results; `src/index.ts` is the pi surface, `bin/baba-search.ts` the CLI, `bin/baba-mcp.ts` the MCP server.
+- **Daemon lifecycle**: One detached `baba serve --socket` per repo clone. Self-exits after 10 minutes of inactivity. Spawned on demand by the extension. Its stderr goes to `.baba/daemon.log`, truncated at each spawn.
 
 ## Development
 

@@ -339,6 +339,8 @@ describe("baba-mcp", () => {
 		const main = repo("baba-mcp-wt-main-");
 		const wt = join(scratch("baba-mcp-wt-holder-"), "wt");
 		git(main, "worktree", "add", "-q", wt, "-b", "wt");
+		// A mutated server could spawn in the worktree; stop that daemon too.
+		repos.push(wt);
 		const outside = scratch("baba-mcp-wt-out-");
 		const s = await openSession({
 			cwd: outside,

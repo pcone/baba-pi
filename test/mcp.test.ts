@@ -61,7 +61,7 @@ function repo(prefix: string): string {
 
 /** `BABA_BIN` for the server, plus the fake daemon's behaviour. */
 function daemonEnv(opts: Parameters<typeof fakeEnv>[0] = {}): Record<string, string> {
-	return { BABA_BIN: fakeServeBin(scratch("baba-mcp-bin-")), ...fakeEnv(opts) };
+	return { BABA_BIN: fakeServeBin(), ...fakeEnv(opts) };
 }
 
 async function closeSession(s: McpSession): Promise<void> {

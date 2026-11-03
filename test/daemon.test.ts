@@ -8,7 +8,14 @@
  * Run: bun test test/daemon.test.ts
  */
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureDaemon } from "../src/client.ts";
@@ -22,7 +29,7 @@ import {
 /** A bare temp dir standing in for a repo root; `ensureDaemon` needs no git. */
 function tempRoot(prefix: string): { root: string; bin: string; cleanup: () => void } {
 	const root = mkdtempSync(join(tmpdir(), prefix));
-	const bin = fakeServeBin(root);
+	const bin = fakeServeBin();
 	return {
 		root,
 		bin,
@@ -103,6 +110,41 @@ describe("ensureDaemon status callback", () => {
 			expect(a).toEqual(["L1", "L2"]);
 			expect(b).toEqual(["L2"]);
 			expect(readFileSync(mark, "utf8").trim().split("\n")).toHaveLength(1);
+		} finally {
+			restore();
+			t.cleanup();
+		}
+	}, 20_000);
+});
+
+describe("ensureDaemon log handle", () => {
+	it("holds no open handle on daemon.log while or after it waits", async () => {
+		// The reader opens the log per poll and the spawn closes its fd; lsof on
+		// this process shows either one if it stays open.
+		const t = tempRoot("baba-daemon-fd-");
+		const logOpen = (): boolean =>
+			execFileSync("lsof", ["-p", String(process.pid)], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+			}).includes("daemon.log");
+		const restore = setEnv({
+			BABA_BIN: t.bin,
+			...fakeEnv({ lines: [[0, "baba: startup"]], bindMs: 1200 }),
+		});
+		const samples: boolean[] = [];
+		let done = false;
+		try {
+			const spawner = ensureDaemon(t.root).finally(() => {
+				done = true;
+			});
+			while (!done) {
+				samples.push(logOpen());
+				await Bun.sleep(150);
+			}
+			await spawner;
+			expect(samples.length).toBeGreaterThan(0);
+			expect(samples.some(Boolean)).toBe(false);
+			expect(logOpen()).toBe(false);
 		} finally {
 			restore();
 			t.cleanup();

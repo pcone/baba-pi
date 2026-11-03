@@ -397,10 +397,9 @@ describe("baba-search", () => {
 		// The daemon is spawned by the CLI itself: its stderr is the log, and the
 		// lines reach the CLI's stderr before the result on stdout.
 		const repo = tempRepo("baba-cli-log-");
-		const binDir = mkdtempSync(join(tmpdir(), "baba-cli-logbin-"));
 		try {
 			const run = await runCli(repo, ["hello world"], {
-				BABA_BIN: fakeServeBin(binDir),
+				BABA_BIN: fakeServeBin(),
 				...fakeEnv({
 					lines: [[0, "baba: startup 1/2"]],
 					bindMs: 600,
@@ -413,7 +412,6 @@ describe("baba-search", () => {
 		} finally {
 			killSpawnedDaemon(repo);
 			rmSync(repo, { recursive: true, force: true });
-			rmSync(binDir, { recursive: true, force: true });
 		}
 	});
 

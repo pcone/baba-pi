@@ -5,11 +5,9 @@
  * from `FAKE_*` env (see that file). `killSpawnedDaemon` stops the process the
  * client spawned, found through the repo's pid file.
  */
-import {
-	chmodSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const FAKE_SERVE = resolve(import.meta.dir, "fake-serve.ts");
@@ -40,12 +38,26 @@ export type FakeDaemonOptions = {
 	mark?: string;
 };
 
-/** A `BABA_BIN` that runs the fake daemon. Writes `<dir>/fake-baba`. */
-export function fakeServeBin(dir: string): string {
-	const bin = join(dir, "fake-baba");
-	writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_SERVE}" "$@"\n`);
-	chmodSync(bin, 0o755);
-	return bin;
+let compiled: string | null = null;
+
+/**
+ * A `BABA_BIN` for the fake daemon: `fake-serve.ts` compiled to an executable
+ * named `baba`. The client's pid check matches the executable's name against
+ * the binary's, so a shell wrapper (which execs bun) would not pass as baba.
+ * Built once per test process.
+ */
+export function fakeServeBin(): string {
+	if (compiled === null) {
+		const dir = mkdtempSync(join(tmpdir(), "baba-fake-bin-"));
+		const bin = join(dir, "baba");
+		execFileSync(process.execPath, ["build", "--compile", FAKE_SERVE, "--outfile", bin], {
+			stdio: "ignore",
+			timeout: 120_000,
+		});
+		process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+		compiled = bin;
+	}
+	return compiled;
 }
 
 /** Env for one fake daemon run. */

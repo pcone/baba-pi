@@ -568,3 +568,55 @@ export function formatResults(results: SearchResult[]): string {
   return lines.join("\n").trimEnd();
 }
 
+
+// ── Query ───────────────────────────────────────────────────────────
+
+/** `top_k` for a search that names none. */
+export const DEFAULT_TOP_K = 10;
+
+/**
+ * One semantic query: resolve the main repo from `cwd`, ensure the daemon,
+ * send the query. Resolves to the text the CLI prints on stdout. Rejects with
+ * an Error whose message is the failure reason. `onStatus` gets each status
+ * line in order, before the result or the rejection.
+ */
+export async function search(
+  cwd: string,
+  query: string,
+  topK: number,
+  onStatus: (msg: string) => void,
+): Promise<string> {
+  const trimmed = query.trim();
+  if (trimmed.length === 0) {
+    throw new Error("empty query");
+  }
+
+  const mainRoot = findMainRoot(cwd);
+  if (mainRoot === null) {
+    // findMainRoot collapses "not a repo", "no git", "unparseable" and
+    // "root vanished" into null; the message names both live cases.
+    throw new Error(
+      `${cwd} is not inside a git repository, or git could not answer — baba indexes a repo's main checkout, so run this from one (or from a worktree of one)`,
+    );
+  }
+
+  const sockPath = await ensureDaemon(mainRoot);
+  const response = await daemonRequest(
+    { type: "search", query: trimmed, top_k: topK },
+    sockPath,
+  );
+
+  for (const status of (response as { statuses?: string[] }).statuses ?? []) {
+    onStatus(status);
+  }
+
+  switch (response.type) {
+    case "results":
+      return `${formatResults(response.results)}\n`;
+    case "error":
+      throw new Error(`baba error: ${response.msg}`);
+    default:
+      // The client's read loop returns only `results` or `error`.
+      throw new Error(`unexpected response: ${JSON.stringify(response)}`);
+  }
+}

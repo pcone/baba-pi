@@ -15,15 +15,8 @@
  * Exit status: 0 results, 1 no repo or no daemon, 2 usage.
  */
 
-import {
-	daemonRequest,
-	ensureDaemon,
-	findMainRoot,
-	formatResults,
-	type ServeResponse,
-} from "../src/client.ts";
+import { DEFAULT_TOP_K, search } from "../src/client.ts";
 
-const DEFAULT_TOP_K = 10;
 const USAGE = 'usage: baba-search "<query>" [-k N]';
 
 /** Write, and wait for the flush: `process.exit` truncates a pending pipe write. */
@@ -78,41 +71,21 @@ async function main(argv: string[]): Promise<number> {
 		return usageError("empty query");
 	}
 
-	const cwd = process.cwd();
-	const mainRoot = findMainRoot(cwd);
-	if (mainRoot === null) {
-		// findMainRoot collapses "not a repo", "no git", "unparseable" and
-		// "root vanished" into null; the message names both live cases.
-		return fail(
-			`${cwd} is not inside a git repository, or git could not answer — baba indexes a repo's main checkout, so run this from one (or from a worktree of one)`,
-		);
-	}
-
-	let response: ServeResponse;
-	try {
-		const sockPath = await ensureDaemon(mainRoot);
-		response = await daemonRequest(
-			{ type: "search", query: trimmed, top_k: topK },
-			sockPath,
-		);
-	} catch (err) {
-		return fail(err instanceof Error ? err.message : String(err));
-	}
-
 	// Status lines are progress, not results: stderr keeps stdout pipeable.
-	for (const status of (response as { statuses?: string[] }).statuses ?? []) {
-		await write(process.stderr, `[baba] ${status}\n`);
-	}
+	// Writes chain so `process.exit` below cannot truncate one still pending.
+	let pending = Promise.resolve();
+	const onStatus = (msg: string) => {
+		pending = pending.then(() => write(process.stderr, `[baba] ${msg}\n`));
+	};
 
-	switch (response.type) {
-		case "results":
-			await write(process.stdout, `${formatResults(response.results)}\n`);
-			return 0;
-		case "error":
-			return fail(`baba error: ${response.msg}`);
-		default:
-			// The client's read loop returns only `results` or `error`.
-			return fail(`unexpected response: ${JSON.stringify(response)}`);
+	try {
+		const text = await search(process.cwd(), trimmed, topK, onStatus);
+		await pending;
+		await write(process.stdout, text);
+		return 0;
+	} catch (err) {
+		await pending;
+		return fail(err instanceof Error ? err.message : String(err));
 	}
 }
 

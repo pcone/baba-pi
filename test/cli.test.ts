@@ -1,9 +1,10 @@
 /**
  * Rows for `bin/baba-search.ts` — the one-query CLI.
  *
- * Every row runs the real CLI as a child process (`bun bin/baba-search.ts …`),
- * never an internal helper, so the argv parsing, the cwd resolution, the
- * daemon connect and the exit status are all under test.
+ * Every row runs the real CLI as a child process (`bun bin/baba-search.ts …`,
+ * and one row by executing the file itself), never an internal helper, so the
+ * argv parsing, the cwd resolution, the daemon connect and the exit status are
+ * all under test.
  *
  * The daemon is fake and lives in a temp repo: a unix socket at
  * `<repo>/.baba/daemon.sock` answering canned JSON lines. `ensureDaemon`
@@ -13,23 +14,27 @@
  * existing file for the same reason: `ensureDaemon` checks it before the
  * liveness probe.
  *
+ * The fixture therefore covers warm runs only; the rows that need a failure
+ * reach it without a spawn (a missing binary, a daemon that hangs up), which
+ * is why neither of them waits for `DAEMON_START_TIMEOUT_MS`.
+ *
  * Run: bun test test/cli.test.ts
  */
 import { describe, expect, it } from "bun:test";
-import { spawn } from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const CLI = resolve(import.meta.dir, "..", "bin", "baba-search.ts");
 
@@ -50,6 +55,16 @@ function git(cwd: string, ...args: string[]): void {
 	});
 }
 
+/** A temp git repo, with nothing else in it. */
+function tempRepo(prefix: string): string {
+	const repo = mkdtempSync(join(tmpdir(), prefix));
+	git(repo, "init", "-q");
+	writeFileSync(join(repo, "a.txt"), "a\n");
+	git(repo, "add", "a.txt");
+	git(repo, "commit", "-q", "-m", "init");
+	return repo;
+}
+
 type Harness = {
 	repo: string;
 	/** Lines the fake daemon received, in order. */
@@ -59,17 +74,14 @@ type Harness = {
 
 /**
  * A temp git repo whose `.baba` holds a fake daemon: live pid file, and a
- * socket that answers each request line with `reply(line)`.
+ * socket that answers each request line with `reply(line)`. A null reply
+ * hangs up instead, which is how the retry-exhausted row fails fast.
  */
 async function fakeRepo(
 	prefix: string,
-	reply: (line: string) => string[],
+	reply: (line: string, n: number) => string[] | null,
 ): Promise<Harness> {
-	const repo = mkdtempSync(join(tmpdir(), prefix));
-	git(repo, "init", "-q");
-	writeFileSync(join(repo, "a.txt"), "a\n");
-	git(repo, "add", "a.txt");
-	git(repo, "commit", "-q", "-m", "init");
+	const repo = tempRepo(prefix);
 
 	const baba = join(repo, ".baba");
 	mkdirSync(baba);
@@ -77,6 +89,7 @@ async function fakeRepo(
 
 	const received: string[] = [];
 	const sockets: Socket[] = [];
+	let n = 0;
 	const server = createServer((sock) => {
 		sockets.push(sock);
 		sock.setEncoding("utf8");
@@ -88,7 +101,9 @@ async function fakeRepo(
 				const line = buf.slice(0, idx);
 				buf = buf.slice(idx + 1);
 				received.push(line);
-				sock.write(reply(line).map((r) => r + "\n").join(""));
+				const replies = reply(line, n++);
+				if (replies === null) sock.destroy();
+				else sock.write(replies.map((r) => r + "\n").join(""));
 				idx = buf.indexOf("\n");
 			}
 		});
@@ -116,14 +131,14 @@ function fakeBin(dir: string): string {
 
 type Run = { code: number | null; stdout: string; stderr: string };
 
-/** Run the CLI as a child process, from `cwd`, with `env` overrides. */
-function runCli(
-	cwd: string,
+function collect(
+	command: string,
 	args: string[],
-	env: Record<string, string> = {},
+	cwd: string,
+	env: Record<string, string>,
 ): Promise<Run> {
 	return new Promise((res, rej) => {
-		const child = spawn(process.execPath, [CLI, ...args], {
+		const child = spawn(command, args, {
 			cwd,
 			env: { ...process.env, ...env },
 			stdio: ["ignore", "pipe", "pipe"],
@@ -136,10 +151,12 @@ function runCli(
 		child.stderr.setEncoding("utf8").on("data", (c: string) => {
 			stderr += c;
 		});
+		// Under bun's 5s per-test timeout, so a row that wrongly reaches a
+		// spawn reds on this message rather than as an opaque test timeout.
 		const timer = setTimeout(() => {
 			child.kill("SIGKILL");
 			rej(new Error(`baba-search did not exit; stdout=${stdout} stderr=${stderr}`));
-		}, 30_000);
+		}, 4000);
 		child.on("error", (err) => {
 			clearTimeout(timer);
 			rej(err);
@@ -151,7 +168,25 @@ function runCli(
 	});
 }
 
-const ONE_RESULT = {
+/** Run the CLI as a child process, from `cwd`, with `env` overrides. */
+function runCli(
+	cwd: string,
+	args: string[],
+	env: Record<string, string> = {},
+): Promise<Run> {
+	return collect(process.execPath, [CLI, ...args], cwd, env);
+}
+
+/** Execute the CLI file itself, the way the skill documents it. */
+function runCliDirect(
+	cwd: string,
+	args: string[],
+	env: Record<string, string> = {},
+): Promise<Run> {
+	return collect(CLI, args, cwd, env);
+}
+
+const ONE_RESULT_LINE = JSON.stringify({
 	type: "results",
 	results: [
 		{
@@ -162,8 +197,7 @@ const ONE_RESULT = {
 			text: "hello world",
 		},
 	],
-};
-const ONE_RESULT_LINE = JSON.stringify(ONE_RESULT);
+});
 const ONE_RESULT_TEXT = "1. [0.876] docs/a.md — Intro\n   hello world";
 
 describe("baba-search", () => {
@@ -173,7 +207,7 @@ describe("baba-search", () => {
 		const h = await fakeRepo("baba-cli-ok-", () => [ONE_RESULT_LINE]);
 		try {
 			const run = await runCli(h.repo, ["hello world"], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(0);
 			expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
@@ -186,11 +220,27 @@ describe("baba-search", () => {
 		}
 	});
 
+	it("runs when the file is executed directly", async () => {
+		// The skill's only invocation: `#!/usr/bin/env bun` plus the exec bit.
+		// `bun <script>` would pass without either.
+		const h = await fakeRepo("baba-cli-exec-", () => [ONE_RESULT_LINE]);
+		try {
+			const run = await runCliDirect(h.repo, ["hello world"], {
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
+			});
+			expect(run.code).toBe(0);
+			expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
+			expect(run.stderr).toBe("");
+		} finally {
+			await h.cleanup();
+		}
+	});
+
 	it("sends -k as top_k", async () => {
 		const h = await fakeRepo("baba-cli-k-", () => [ONE_RESULT_LINE]);
 		try {
 			const run = await runCli(h.repo, ["hello world", "-k", "3"], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(0);
 			expect(h.received).toEqual([
@@ -210,7 +260,7 @@ describe("baba-search", () => {
 		try {
 			mkdirSync(sub, { recursive: true });
 			const run = await runCli(sub, ["hello world"], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(0);
 			expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
@@ -228,7 +278,7 @@ describe("baba-search", () => {
 		]);
 		try {
 			const run = await runCli(h.repo, ["hello world"], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(0);
 			expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
@@ -242,7 +292,7 @@ describe("baba-search", () => {
 		const h = await fakeRepo("baba-cli-noarg-", () => [ONE_RESULT_LINE]);
 		try {
 			const run = await runCli(h.repo, [], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(2);
 			expect(run.stdout).toBe("");
@@ -260,11 +310,63 @@ describe("baba-search", () => {
 		const h = await fakeRepo("baba-cli-opt-", () => [ONE_RESULT_LINE]);
 		try {
 			const run = await runCli(h.repo, ["hello", "-x"], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(2);
 			expect(run.stdout).toBe("");
 			expect(run.stderr).toContain('unknown option "-x"');
+			expect(h.received).toEqual([]);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	it("exits 2 when -k is not a positive integer", async () => {
+		const h = await fakeRepo("baba-cli-badk-", () => [ONE_RESULT_LINE]);
+		try {
+			for (const args of [
+				["hello", "-k", "abc"],
+				["hello", "-k", "0"],
+				["hello", "-k"],
+			]) {
+				const run = await runCli(h.repo, args, {
+					BABA_BIN: fakeBin(join(h.repo, ".baba")),
+				});
+				expect(run.code).toBe(2);
+				expect(run.stdout).toBe("");
+				expect(run.stderr).toContain("-k needs a positive integer");
+			}
+			expect(h.received).toEqual([]);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	it("exits 2 on an empty query", async () => {
+		const h = await fakeRepo("baba-cli-empty-", () => [ONE_RESULT_LINE]);
+		try {
+			const run = await runCli(h.repo, ["   "], {
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
+			});
+			expect(run.code).toBe(2);
+			expect(run.stdout).toBe("");
+			expect(run.stderr).toContain("empty query");
+			expect(h.received).toEqual([]);
+		} finally {
+			await h.cleanup();
+		}
+	});
+
+	it("exits 2 on a second positional", async () => {
+		const h = await fakeRepo("baba-cli-two-", () => [ONE_RESULT_LINE]);
+		try {
+			const run = await runCli(h.repo, ["one", "two"], {
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
+			});
+			expect(run.code).toBe(2);
+			expect(run.stdout).toBe("");
+			expect(run.stderr).toContain("one query per call");
+			expect(h.received).toEqual([]);
 		} finally {
 			await h.cleanup();
 		}
@@ -278,10 +380,47 @@ describe("baba-search", () => {
 			});
 			expect(run.code).toBe(1);
 			expect(run.stdout).toBe("");
-			expect(run.stderr).toContain("is not inside a git repository");
+			// Exact, so a git `fatal:` line leaking through the client's
+			// execFileSync would red this row: stderr is the CLI's own message.
+			expect(run.stderr).toBe(
+				`baba-search: ${realpathSync(dir)} is not inside a git repository, or git could not answer — baba indexes a repo's main checkout, so run this from one (or from a worktree of one)\n`,
+			);
 			expect(existsSync(join(dir, ".baba"))).toBe(false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("exits 1 naming the reason when the baba binary is missing", async () => {
+		// The "no daemon" arm of the contract. No `.baba` and no usable binary,
+		// so `ensureDaemon` throws before any spawn or poll.
+		const repo = tempRepo("baba-cli-nobin-");
+		try {
+			const run = await runCli(repo, ["hello world"], {
+				BABA_BIN: join(repo, "no-such-baba"),
+			});
+			expect(run.code).toBe(1);
+			expect(run.stdout).toBe("");
+			expect(run.stderr).toContain("baba binary not found at");
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it("exits 1 when the daemon hangs up on every attempt", async () => {
+		// Retry-exhausted, the realistic "daemon died" path: the client retries
+		// once, then rejects, and the CLI reports it instead of printing nothing.
+		const h = await fakeRepo("baba-cli-hangup-", () => null);
+		try {
+			const run = await runCli(h.repo, ["hello world"], {
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
+			});
+			expect(run.code).toBe(1);
+			expect(run.stdout).toBe("");
+			expect(run.stderr).toContain("closed the connection");
+			expect(h.received).toHaveLength(2);
+		} finally {
+			await h.cleanup();
 		}
 	});
 
@@ -291,7 +430,7 @@ describe("baba-search", () => {
 		]);
 		try {
 			const run = await runCli(h.repo, ["hello world"], {
-				BABA_BIN: fakeBin(dirname(h.repo)),
+				BABA_BIN: fakeBin(join(h.repo, ".baba")),
 			});
 			expect(run.code).toBe(1);
 			expect(run.stdout).toBe("");

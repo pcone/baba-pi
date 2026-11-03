@@ -81,8 +81,10 @@ async function main(argv: string[]): Promise<number> {
 	const cwd = process.cwd();
 	const mainRoot = findMainRoot(cwd);
 	if (mainRoot === null) {
+		// findMainRoot collapses "not a repo", "no git", "unparseable" and
+		// "root vanished" into null; the message names both live cases.
 		return fail(
-			`${cwd} is not inside a git repository — baba indexes a repo's main checkout, so run this from one (or from a worktree of one)`,
+			`${cwd} is not inside a git repository, or git could not answer — baba indexes a repo's main checkout, so run this from one (or from a worktree of one)`,
 		);
 	}
 

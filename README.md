@@ -79,7 +79,7 @@ ranked results to stdout. Diagnostics go to stderr.
 /Users/scott/Developer/baba-pi/bin/baba-search.ts "how does the daemon decide liveness" -k 5
 ```
 
-Exit status is 0 for results, 1 when there is no repo or no daemon, 2 for a usage error.
+Exit status is 0 for results, 1 when there is no repo, no daemon, or the daemon answered with an error, and 2 for a usage error.
 The embedder stays in the daemon, so a query costs one socket round trip.
 
 Claude Code reaches it through the `baba-search` skill in

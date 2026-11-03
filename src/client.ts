@@ -149,7 +149,13 @@ export function findMainRoot(cwd: string): string | null {
     const gitCommonDir = execFileSync(
       "git",
       ["-C", cwd, "rev-parse", "--git-common-dir"],
-      { encoding: "utf8", timeout: 5000 },
+      {
+        encoding: "utf8",
+        timeout: 5000,
+        // "not a git repository" is an expected answer here, not a diagnostic:
+        // the caller owns stderr and names the failure itself.
+        stdio: ["ignore", "pipe", "ignore"],
+      },
     ).trim();
 
     const mainRoot = resolve(cwd, dirname(gitCommonDir));

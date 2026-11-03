@@ -68,15 +68,41 @@ The LLM can now use `semantic_search` to find relevant code and docs:
 > How does the type system work?
 ```
 
+## CLI
+
+`bin/baba-search.ts` is the second entry point: one query, one line of results, no pi
+runtime. It resolves the repo from the current directory (any worktree or subdirectory),
+connects to the same daemon the extension uses — starting it if needed — and prints the
+ranked results to stdout. Diagnostics go to stderr.
+
+```bash
+/Users/scott/Developer/baba-pi/bin/baba-search.ts "how does the daemon decide liveness" -k 5
+```
+
+Exit status is 0 for results, 1 when there is no repo or no daemon, 2 for a usage error.
+The embedder stays in the daemon, so a query costs one socket round trip.
+
+Claude Code reaches it through the `baba-search` skill in
+[pi-config](https://github.com/pcone/pi-config) (`skills/baba-search/`), which tells Claude
+when a semantic query beats a grep.
+
 ## Architecture
 
 - **Engine** (`baba` repo): Rust binary + Python CoreML embedder. Indexes docs and code, serves queries over Unix socket.
-- **Extension** (`baba-pi` repo): Thin TypeScript client. Resolves the main repo from any CWD (worktree-aware), spawns/connects to the daemon, formats results.
+- **Extension** (`baba-pi` repo): Thin TypeScript client. `src/client.ts` resolves the main repo from any CWD (worktree-aware), spawns/connects to the daemon and formats results; `src/index.ts` is the pi surface, `bin/baba-search.ts` the CLI.
 - **Daemon lifecycle**: One detached `baba serve --socket` per repo clone. Self-exits after 10 minutes of inactivity. Spawned on demand by the extension.
 
 ## Development
 
-The extension is a single TypeScript file (`src/index.ts`). pi loads it directly (no build step). To test:
+pi loads `src/index.ts` directly (no build step), and `src/client.ts` is a plain module
+shared with the CLI. Tests use bun's runner:
+
+```bash
+bun test              # all rows
+bun test test/cli.test.ts
+```
+
+To try the extension in a session:
 
 ```bash
 pi -e ./src/index.ts

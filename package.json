@@ -8,5 +8,8 @@
   },
   "pi": {
     "extensions": ["./src/index.ts"]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
   }
 }

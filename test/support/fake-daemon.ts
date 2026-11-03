@@ -14,6 +14,21 @@ import { join, resolve } from "node:path";
 
 const FAKE_SERVE = resolve(import.meta.dir, "fake-serve.ts");
 
+export const ONE_RESULT_LINE = JSON.stringify({
+	type: "results",
+	results: [
+		{
+			source_type: "doc",
+			source_path: "docs/a.md",
+			heading_path: "Intro",
+			score: 0.876,
+			text: "hello world",
+		},
+	],
+});
+export const ONE_RESULT_TEXT = "1. [0.876] docs/a.md — Intro\n   hello world";
+
+
 export type FakeDaemonOptions = {
 	/** [atMs, line] pairs written to the daemon log. */
 	lines?: [number, string][];

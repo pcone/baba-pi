@@ -15,7 +15,7 @@
  * Exit status: 0 results, 1 no repo or no daemon, 2 usage.
  */
 
-import { DEFAULT_TOP_K, search } from "../src/client.ts";
+import { DEFAULT_TOP_K, search, validTopK } from "../src/client.ts";
 
 const USAGE = 'usage: baba-search "<query>" [-k N]';
 
@@ -46,7 +46,7 @@ async function main(argv: string[]): Promise<number> {
 		if (arg === "-k") {
 			const raw = argv[++i];
 			const n = raw === undefined ? Number.NaN : Number(raw);
-			if (!Number.isInteger(n) || n < 1) {
+			if (!validTopK(n)) {
 				return usageError(
 					`-k needs a positive integer, got ${raw === undefined ? "nothing" : `"${raw}"`}`,
 				);

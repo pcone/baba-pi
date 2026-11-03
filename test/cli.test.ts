@@ -21,7 +21,7 @@
  * Run: bun test test/cli.test.ts
  */
 import { describe, expect, it } from "bun:test";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -39,36 +39,12 @@ import {
 	fakeEnv,
 	fakeServeBin,
 	killSpawnedDaemon,
+	ONE_RESULT_LINE,
+	ONE_RESULT_TEXT,
 } from "./support/fake-daemon.ts";
+import { tempRepo } from "./support/repo.ts";
 
 const CLI = resolve(import.meta.dir, "..", "bin", "baba-search.ts");
-
-const GIT_ENV = {
-	...process.env,
-	GIT_AUTHOR_NAME: "t",
-	GIT_AUTHOR_EMAIL: "t@t",
-	GIT_COMMITTER_NAME: "t",
-	GIT_COMMITTER_EMAIL: "t@t",
-};
-
-function git(cwd: string, ...args: string[]): void {
-	execFileSync("git", args, {
-		cwd,
-		env: GIT_ENV,
-		stdio: ["ignore", "ignore", "ignore"],
-		timeout: 30_000,
-	});
-}
-
-/** A temp git repo, with nothing else in it. */
-function tempRepo(prefix: string): string {
-	const repo = mkdtempSync(join(tmpdir(), prefix));
-	git(repo, "init", "-q");
-	writeFileSync(join(repo, "a.txt"), "a\n");
-	git(repo, "add", "a.txt");
-	git(repo, "commit", "-q", "-m", "init");
-	return repo;
-}
 
 type Harness = {
 	repo: string;
@@ -191,19 +167,7 @@ function runCliDirect(
 	return collect(CLI, args, cwd, env);
 }
 
-const ONE_RESULT_LINE = JSON.stringify({
-	type: "results",
-	results: [
-		{
-			source_type: "doc",
-			source_path: "docs/a.md",
-			heading_path: "Intro",
-			score: 0.876,
-			text: "hello world",
-		},
-	],
-});
-const ONE_RESULT_TEXT = "1. [0.876] docs/a.md — Intro\n   hello world";
+
 
 describe("baba-search", () => {
 	it("prints ranked results on stdout and nothing else", async () => {

@@ -680,6 +680,11 @@ export function formatResults(results: SearchResult[]): string {
 /** `top_k` for a search that names none. */
 export const DEFAULT_TOP_K = 10;
 
+/** Whether `n` is a usable `top_k`: a positive integer. */
+export function validTopK(n: number): boolean {
+  return Number.isInteger(n) && n >= 1;
+}
+
 /**
  * One semantic query: resolve the main repo from `cwd`, ensure the daemon,
  * send the query. Resolves to the text the CLI prints on stdout. Rejects with

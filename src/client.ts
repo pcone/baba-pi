@@ -16,6 +16,8 @@
  *     git-common-dir), or null outside a repo.
  *   - ensureDaemon(mainRoot) → one detached daemon at
  *     <repo>/.baba/daemon.sock; spawned on demand, survives sessions.
+ *     Its stderr goes to <repo>/.baba/daemon.log; a caller waiting on a
+ *     starting daemon gets that log's new lines as status.
  *   - Persistent socket client with reconnect-on-failure.
  *
  * Engine location (BABA_HOME):
@@ -29,9 +31,15 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import {
+  closeSync,
   existsSync,
+  mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
+  statSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { connect, type Socket } from "node:net";
@@ -220,18 +228,30 @@ function canConnect(
   });
 }
 
-/** Poll for a socket to appear on disk and accept connections. */
+/**
+ * Poll for a socket to appear on disk and accept connections. `drain` runs
+ * on each poll and once more when the wait ends, so the caller sees the log
+ * lines written before the socket bound.
+ */
 function waitForSocket(
   sockPath: string,
   timeoutMs: number,
+  drain: () => void,
 ): Promise<void> {
   return new Promise((res, rej) => {
     const start = Date.now();
 
+    const finish = (err?: Error) => {
+      drain();
+      if (err) rej(err);
+      else res();
+    };
+
     const poll = () => {
+      drain();
       const elapsed = Date.now() - start;
       if (elapsed >= timeoutMs) {
-        return rej(
+        return finish(
           new Error(
             `baba daemon failed to start within ${timeoutMs / 1000}s (socket file never appeared)`,
           ),
@@ -241,9 +261,9 @@ function waitForSocket(
       if (existsSync(sockPath)) {
         // Socket file exists — verify it accepts connections.
         canConnect(sockPath, SOCKET_CONNECT_TIMEOUT_MS).then((ok) => {
-          if (ok) return res();
+          if (ok) return finish();
           if (Date.now() - start >= timeoutMs) {
-            return rej(
+            return finish(
               new Error(
                 `baba daemon failed to start within ${timeoutMs / 1000}s (socket not accepting connections)`,
               ),
@@ -262,20 +282,91 @@ function waitForSocket(
 }
 
 /**
+ * Reads a daemon log from `offset`, passing each complete new line to
+ * `onStatus`. Opens the file per call, so no handle outlives a poll. A
+ * throwing callback is reported on stderr and does not stop the reader.
+ */
+function logTail(
+  logPath: string,
+  offset: number,
+  onStatus: (msg: string) => void,
+): { drain: () => void } {
+  let pos = offset;
+  let partial = "";
+  return {
+    drain() {
+      let size: number;
+      try {
+        size = statSync(logPath).size;
+      } catch {
+        return; // no log yet
+      }
+      if (size < pos) {
+        // Truncated by a later spawn: read the new file from its start.
+        pos = 0;
+        partial = "";
+      }
+      if (size === pos) return;
+
+      const buf = Buffer.alloc(size - pos);
+      const fd = openSync(logPath, "r");
+      try {
+        readSync(fd, buf, 0, buf.length, pos);
+      } finally {
+        closeSync(fd);
+      }
+      pos = size;
+
+      const lines = (partial + buf.toString("utf8")).split("\n");
+      partial = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.length === 0) continue;
+        try {
+          onStatus(line);
+        } catch (err) {
+          console.error(`baba-client: status callback threw: ${err}`);
+        }
+      }
+    },
+  };
+}
+
+/** Byte length of the log now; a waiter starts tailing from here. */
+function logSize(logPath: string): number {
+  try {
+    return statSync(logPath).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Ensure a baba daemon is running for the given main repo root.
  * Returns the socket path on success.
  *
- * Liveness = (pid-alive) AND (socket-connects).
- * If either check fails → clean up stale files → spawn detached.
+ * Liveness = (pid-alive) AND (socket-connects). A live pid with no socket
+ * file is a daemon still in its startup catch-up (it binds the socket after
+ * that): this caller waits for it and tails its log instead of spawning a
+ * second one. A dead pid or a socket that refuses connections is stale: the
+ * files are cleaned up and a daemon is spawned detached.
+ *
+ * `onStatus` receives the daemon log's lines while this call waits for the
+ * socket, from the end of the log when it found a daemon already starting,
+ * from the start of the fresh log when it spawned one.
  *
  * Race tolerance: two sessions may call this simultaneously; the first to
  * bind wins (WO-010), the loser gets EADDRINUSE and exits. We retry
  * liveness after spawn — if the other session's daemon is now alive,
  * we connect to it. Max 2 spawn attempts.
  */
-export async function ensureDaemon(mainRoot: string): Promise<string> {
-  const sockPath = resolve(mainRoot, ".baba", "daemon.sock");
-  const pidPath = resolve(mainRoot, ".baba", "daemon.pid");
+export async function ensureDaemon(
+  mainRoot: string,
+  onStatus: (msg: string) => void = () => {},
+): Promise<string> {
+  const babaDir = resolve(mainRoot, ".baba");
+  const sockPath = resolve(babaDir, "daemon.sock");
+  const pidPath = resolve(babaDir, "daemon.pid");
+  const logPath = resolve(babaDir, "daemon.log");
 
   const bin = resolveCoreBin();
   // Verify the binary exists (unless it's a bare name hoping for PATH).
@@ -302,21 +393,24 @@ export async function ensureDaemon(mainRoot: string): Promise<string> {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     // ── Liveness check: pid-alive AND socket-connects ────────────
-    let daemonAlive = false;
-
+    let pidAlive = false;
     try {
-      const pidRaw = readFileSync(pidPath, "utf8").trim();
-      const pid = parseInt(pidRaw, 10);
-      if (!isNaN(pid) && isPidAlive(pid)) {
-        // PID alive — check socket.
-        daemonAlive = await canConnect(sockPath, SOCKET_CONNECT_TIMEOUT_MS);
-      }
+      const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+      pidAlive = !isNaN(pid) && isPidAlive(pid);
     } catch {
       // pid file doesn't exist or is unreadable — not alive.
     }
 
-    if (daemonAlive) {
-      return sockPath;
+    if (pidAlive) {
+      if (!existsSync(sockPath)) {
+        // Starting: another caller spawned it and it has not bound yet.
+        const tail = logTail(logPath, logSize(logPath), onStatus);
+        await waitForSocket(sockPath, DAEMON_START_TIMEOUT_MS, tail.drain);
+        return sockPath;
+      }
+      if (await canConnect(sockPath, SOCKET_CONNECT_TIMEOUT_MS)) {
+        return sockPath;
+      }
     }
 
     // ── Clean up stale files ────────────────────────────────────
@@ -332,20 +426,32 @@ export async function ensureDaemon(mainRoot: string): Promise<string> {
     }
 
     // ── Spawn detached daemon ───────────────────────────────────
+    // The log is truncated per spawn: it holds this daemon's startup only.
+    mkdirSync(babaDir, { recursive: true });
+    writeFileSync(logPath, "");
+    const logFd = openSync(logPath, "a");
     const child = spawn(
       bin,
       ["serve", "--repo", mainRoot, "--socket", sockPath],
       {
         detached: true,
-        stdio: "ignore",
+        stdio: ["ignore", logFd, logFd],
         env,
       },
     );
+    closeSync(logFd);
     child.unref();
+    if (child.pid === undefined) {
+      throw new Error(`failed to spawn ${bin}`);
+    }
+    // Written at spawn so a second caller sees the daemon as starting.
+    // The daemon writes the same pid when it binds.
+    writeFileSync(pidPath, `${child.pid}\n`);
 
     // Wait for the socket to appear.
+    const tail = logTail(logPath, 0, onStatus);
     try {
-      await waitForSocket(sockPath, DAEMON_START_TIMEOUT_MS);
+      await waitForSocket(sockPath, DAEMON_START_TIMEOUT_MS, tail.drain);
       return sockPath;
     } catch (waitErr) {
       // If this is our last attempt, re-throw.
@@ -600,7 +706,7 @@ export async function search(
     );
   }
 
-  const sockPath = await ensureDaemon(mainRoot);
+  const sockPath = await ensureDaemon(mainRoot, onStatus);
   const response = await daemonRequest(
     { type: "search", query: trimmed, top_k: topK },
     sockPath,

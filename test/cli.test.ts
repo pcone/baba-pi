@@ -35,6 +35,11 @@ import { createServer } from "node:net";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+	fakeEnv,
+	fakeServeBin,
+	killSpawnedDaemon,
+} from "./support/fake-daemon.ts";
 
 const CLI = resolve(import.meta.dir, "..", "bin", "baba-search.ts");
 
@@ -421,6 +426,30 @@ describe("baba-search", () => {
 			expect(h.received).toHaveLength(2);
 		} finally {
 			await h.cleanup();
+		}
+	});
+
+	it("prints the daemon log's startup lines on stderr while it waits", async () => {
+		// The daemon is spawned by the CLI itself: its stderr is the log, and the
+		// lines reach the CLI's stderr before the result on stdout.
+		const repo = tempRepo("baba-cli-log-");
+		const binDir = mkdtempSync(join(tmpdir(), "baba-cli-logbin-"));
+		try {
+			const run = await runCli(repo, ["hello world"], {
+				BABA_BIN: fakeServeBin(binDir),
+				...fakeEnv({
+					lines: [[0, "baba: startup 1/2"]],
+					bindMs: 600,
+					reply: [ONE_RESULT_LINE],
+				}),
+			});
+			expect(run.code).toBe(0);
+			expect(run.stdout).toBe(`${ONE_RESULT_TEXT}\n`);
+			expect(run.stderr).toBe("[baba] baba: startup 1/2\n");
+		} finally {
+			killSpawnedDaemon(repo);
+			rmSync(repo, { recursive: true, force: true });
+			rmSync(binDir, { recursive: true, force: true });
 		}
 	});
 

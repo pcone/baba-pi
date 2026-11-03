@@ -1,0 +1,77 @@
+/**
+ * Helpers for rows that spawn a fake daemon through the real client.
+ *
+ * `fakeServeBin` is a BABA_BIN that runs `fake-serve.ts`; the behaviour comes
+ * from `FAKE_*` env (see that file). `killSpawnedDaemon` stops the process the
+ * client spawned, found through the repo's pid file.
+ */
+import {
+	chmodSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+
+const FAKE_SERVE = resolve(import.meta.dir, "fake-serve.ts");
+
+export type FakeDaemonOptions = {
+	/** [atMs, line] pairs written to the daemon log. */
+	lines?: [number, string][];
+	/** When the socket binds, ms after start. */
+	bindMs?: number;
+	/** Lines sent back for each request. */
+	reply?: string[];
+	/** File each daemon start appends a line to. */
+	mark?: string;
+};
+
+/** A `BABA_BIN` that runs the fake daemon. Writes `<dir>/fake-baba`. */
+export function fakeServeBin(dir: string): string {
+	const bin = join(dir, "fake-baba");
+	writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_SERVE}" "$@"\n`);
+	chmodSync(bin, 0o755);
+	return bin;
+}
+
+/** Env for one fake daemon run. */
+export function fakeEnv(opts: FakeDaemonOptions): Record<string, string> {
+	const env: Record<string, string> = {
+		FAKE_LINES: JSON.stringify(opts.lines ?? []),
+		FAKE_BIND_MS: String(opts.bindMs ?? 0),
+		FAKE_REPLY: JSON.stringify(opts.reply ?? []),
+	};
+	if (opts.mark !== undefined) env.FAKE_MARK = opts.mark;
+	return env;
+}
+
+/** Stop the daemon a test spawned. No pid file means nothing was spawned. */
+export function killSpawnedDaemon(repo: string): void {
+	let pid: number;
+	try {
+		pid = Number(readFileSync(join(repo, ".baba", "daemon.pid"), "utf8").trim());
+	} catch {
+		return;
+	}
+	if (pid > 0 && pid !== process.pid) {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {
+			// already exited
+		}
+	}
+}
+
+/** Set process.env keys; the returned function restores them. */
+export function setEnv(vars: Record<string, string>): () => void {
+	const saved = new Map<string, string | undefined>();
+	for (const [k, v] of Object.entries(vars)) {
+		saved.set(k, process.env[k]);
+		process.env[k] = v;
+	}
+	return () => {
+		for (const [k, v] of saved) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	};
+}

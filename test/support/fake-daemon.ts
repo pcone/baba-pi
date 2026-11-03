@@ -50,7 +50,9 @@ export function fakeServeBin(): string {
 	if (compiled === null) {
 		const dir = mkdtempSync(join(tmpdir(), "baba-fake-bin-"));
 		const bin = join(dir, "baba");
+		// Run in the scratch dir: the compiler leaves a temp file in its cwd.
 		execFileSync(process.execPath, ["build", "--compile", FAKE_SERVE, "--outfile", bin], {
+			cwd: dir,
 			stdio: "ignore",
 			timeout: 120_000,
 		});

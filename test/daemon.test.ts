@@ -117,6 +117,55 @@ describe("ensureDaemon status callback", () => {
 	}, 20_000);
 });
 
+describe("ensureDaemon log lines", () => {
+	it("forwards a status line as its msg, not as JSON", async () => {
+		const t = tempRoot("baba-daemon-decode-");
+		const status = JSON.stringify({ type: "status", msg: "starting catch-up index..." });
+		const restore = setEnv({
+			BABA_BIN: t.bin,
+			...fakeEnv({ lines: [[0, status]], bindMs: 400 }),
+		});
+		const got: string[] = [];
+		try {
+			await ensureDaemon(t.root, (m) => got.push(m));
+			expect(got).toEqual(["starting catch-up index..."]);
+			// The log keeps the daemon's bytes; only the reported line is decoded.
+			expect(readFileSync(join(t.root, ".baba", "daemon.log"), "utf8")).toBe(`${status}\n`);
+		} finally {
+			restore();
+			t.cleanup();
+		}
+	}, 20_000);
+
+	it("forwards a line that is not a status object verbatim", async () => {
+		// The three non-status cases: a panic (plain text), a JSON object of
+		// another type, and a status whose msg is not a string.
+		const t = tempRoot("baba-daemon-verbatim-");
+		const panic = "thread 'main' panicked at src/serve.rs:12";
+		const other = JSON.stringify({ type: "error", msg: "index missing" });
+		const badMsg = JSON.stringify({ type: "status", msg: 7 });
+		const restore = setEnv({
+			BABA_BIN: t.bin,
+			...fakeEnv({
+				lines: [
+					[0, panic],
+					[0, other],
+					[0, badMsg],
+				],
+				bindMs: 400,
+			}),
+		});
+		const got: string[] = [];
+		try {
+			await ensureDaemon(t.root, (m) => got.push(m));
+			expect(got).toEqual([panic, other, badMsg]);
+		} finally {
+			restore();
+			t.cleanup();
+		}
+	}, 20_000);
+});
+
 describe("ensureDaemon log handle", () => {
 	it("holds no open handle on daemon.log while or after it waits", async () => {
 		// The reader opens the log per poll and the spawn closes its fd; lsof on

@@ -322,13 +322,30 @@ function logTail(
       for (const line of lines) {
         if (line.length === 0) continue;
         try {
-          onStatus(line);
+          onStatus(logMessage(line));
         } catch (err) {
           console.error(`baba-client: status callback threw: ${err}`);
         }
       }
     },
   };
+}
+
+/**
+ * What a log line reports to the caller. The daemon writes status lines as
+ * `{"type":"status","msg":...}` JSON and everything else (panics, raw stderr)
+ * as text; a status line reports its `msg`, any other line is passed through.
+ */
+function logMessage(line: string): string {
+  try {
+    const parsed = JSON.parse(line) as { type?: unknown; msg?: unknown };
+    if (parsed.type === "status" && typeof parsed.msg === "string") {
+      return parsed.msg;
+    }
+  } catch {
+    // Not JSON: a text line.
+  }
+  return line;
 }
 
 /** Byte length of the log now; a waiter starts tailing from here. */

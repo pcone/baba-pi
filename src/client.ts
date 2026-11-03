@@ -41,7 +41,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { connect, type Socket } from "node:net";
 
 // ── Types matching the serve protocol ───────────────────────────────
@@ -357,15 +357,44 @@ function logSize(logPath: string): number {
   }
 }
 
+/** The pid in the pid file, if that process is alive. */
+function livePid(pidPath: string): number | null {
+  try {
+    const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+    return !isNaN(pid) && isPidAlive(pid) ? pid : null;
+  } catch {
+    return null; // no pid file, or unreadable
+  }
+}
+
+/**
+ * Whether `pid` runs the baba core binary. `ps -o comm=` prints the executable
+ * path as it was exec'd, so its basename is the binary's name.
+ */
+function isBabaDaemon(pid: number): boolean {
+  let comm: string;
+  try {
+    comm = execFileSync("ps", ["-p", String(pid), "-o", "comm="], {
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return false; // ps exits non-zero when the pid is gone
+  }
+  return basename(comm) === basename(resolveCoreBin());
+}
+
 /**
  * Ensure a baba daemon is running for the given main repo root.
  * Returns the socket path on success.
  *
- * Liveness = (pid-alive) AND (socket-connects). A live pid with no socket
- * file is a daemon still in its startup catch-up (it binds the socket after
- * that): this caller waits for it and tails its log instead of spawning a
- * second one. A dead pid or a socket that refuses connections is stale: the
- * files are cleaned up and a daemon is spawned detached.
+ * Liveness = (pid-alive) AND (socket-connects). A live baba pid with no
+ * socket file is a daemon still in its startup catch-up (it binds the socket
+ * after that): this caller waits for it and tails its log instead of spawning
+ * a second one. A dead pid, a live pid that is not baba, or a socket that
+ * refuses connections is stale: the files are cleaned up and a daemon is
+ * spawned detached.
  *
  * `onStatus` receives the daemon log's lines while this call waits for the
  * socket, from the end of the log when it found a daemon already starting,
@@ -410,22 +439,17 @@ export async function ensureDaemon(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     // ── Liveness check: pid-alive AND socket-connects ────────────
-    let pidAlive = false;
-    try {
-      const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-      pidAlive = !isNaN(pid) && isPidAlive(pid);
-    } catch {
-      // pid file doesn't exist or is unreadable — not alive.
-    }
-
-    if (pidAlive) {
+    const pid = livePid(pidPath);
+    if (pid !== null) {
       if (!existsSync(sockPath)) {
-        // Starting: another caller spawned it and it has not bound yet.
-        const tail = logTail(logPath, logSize(logPath), onStatus);
-        await waitForSocket(sockPath, DAEMON_START_TIMEOUT_MS, tail.drain);
-        return sockPath;
-      }
-      if (await canConnect(sockPath, SOCKET_CONNECT_TIMEOUT_MS)) {
+        if (isBabaDaemon(pid)) {
+          // Starting: another caller spawned it and it has not bound yet.
+          const tail = logTail(logPath, logSize(logPath), onStatus);
+          await waitForSocket(sockPath, DAEMON_START_TIMEOUT_MS, tail.drain);
+          return sockPath;
+        }
+        // Not baba: the pid file is stale; fall through to a spawn.
+      } else if (await canConnect(sockPath, SOCKET_CONNECT_TIMEOUT_MS)) {
         return sockPath;
       }
     }

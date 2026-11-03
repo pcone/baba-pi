@@ -166,6 +166,36 @@ describe("ensureDaemon log lines", () => {
 	}, 20_000);
 });
 
+describe("ensureDaemon stale pid file", () => {
+	it("treats a pid file naming a live non-baba process as stale and spawns", async () => {
+		// `sleep` is alive and has no socket. Without the baba check the caller
+		// would wait for a socket that never comes (DAEMON_START_TIMEOUT_MS).
+		const t = tempRoot("baba-daemon-stale-");
+		const other = spawn("sleep", ["60"], { stdio: "ignore" });
+		const pidFile = join(t.root, ".baba", "daemon.pid");
+		const mark = join(t.root, "starts");
+		try {
+			mkdirSync(join(t.root, ".baba"));
+			writeFileSync(pidFile, `${other.pid}\n`);
+			const restore = setEnv({
+				BABA_BIN: t.bin,
+				...fakeEnv({ bindMs: 300, mark }),
+			});
+			try {
+				const sock = await ensureDaemon(t.root);
+				expect(sock).toBe(join(t.root, ".baba", "daemon.sock"));
+				expect(readFileSync(pidFile, "utf8").trim()).not.toBe(String(other.pid));
+				expect(readFileSync(mark, "utf8").trim().split("\n")).toHaveLength(1);
+			} finally {
+				restore();
+			}
+		} finally {
+			other.kill();
+			t.cleanup();
+		}
+	}, 20_000);
+});
+
 describe("ensureDaemon log handle", () => {
 	it("holds no open handle on daemon.log while or after it waits", async () => {
 		// The reader opens the log per poll and the spawn closes its fd; lsof on
